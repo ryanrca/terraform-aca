@@ -313,9 +313,23 @@ client secret to record, because there is none.
 
 ## Part 2 — GitHub configuration
 
+`GH_REPO` and `GH_HOST` are reserved by the `gh` CLI: `GH_REPO` overrides the
+target repository for every command and must be `OWNER/REPO`. If one is set to
+anything else — including a bare repository name left over from an earlier
+shell — every `gh` command in this Part fails with
+`expected the "[HOST/]OWNER/REPO" format`. Clear them first.
+
 ```bash
+unset GH_REPO GH_HOST
+
+: "${REPO_OWNER:?set REPO_OWNER first — see step 1.6}"
+: "${REPO_NAME:?set REPO_NAME first — see step 1.6}"
+
 gh auth login
 gh repo set-default "$REPO_OWNER/$REPO_NAME"
+
+# Should print ryanrca/terraform-aca, resolved from the git remote.
+gh repo view --json nameWithOwner --jq .nameWithOwner
 ```
 
 ### 2.1 Environments
@@ -420,15 +434,22 @@ gh api -X PUT "repos/$REPO_OWNER/$REPO_NAME/branches/main/protection" --input - 
 JSON
 ```
 
-`.github/CODEOWNERS` keeps sandboxes self-service while shared environments need review:
+`.github/CODEOWNERS` keeps sandboxes self-service while shared environments need
+review. **The file already exists in this repository** — it is not something to
+create, and the block below is file content, not shell commands. Pasting it into
+a shell makes zsh treat `<ORG>` as an input redirect.
 
-```
-/terraform/     @<ORG>/platform-team
-/scripts/       @<ORG>/platform-team
-/.github/       @<ORG>/platform-team
-/envs/staging/  @<ORG>/platform-team
-/envs/prod/     @<ORG>/platform-team
-# /envs/dev/ intentionally unowned — developers self-serve
+Owners must match the account type. A team reference (`@org/team-slug`) is valid
+only on an organisation-owned repository; on a personal account, use the user:
+
+```bash
+# Personal account (the default here)
+sed -i 's|@[^ ]*/platform-team|@'"$REPO_OWNER"'|' .github/CODEOWNERS
+
+# Organisation: point at a team instead
+# sed -i 's|@'"$REPO_OWNER"'$|@'"$REPO_OWNER"'/platform-team|' .github/CODEOWNERS
+
+cat .github/CODEOWNERS
 ```
 
 ---
