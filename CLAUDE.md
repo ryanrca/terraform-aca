@@ -68,7 +68,7 @@ terraform/                 THE CORE — identical for every environment
   backend.tf               empty partial backend block
   variables.tf             the environment contract + validation
   locals.tf                naming and tag computation
-  main.tf                  5 resources + 2 data sources
+  main.tf                  5 Azure resources + time_offset + 2 data sources
   outputs.tf               app_url, app_fqdn, resource_group_name
 envs/                      THE ONLY PLACE ENVIRONMENTS DIFFER
   dev/       dev-*.tfvars  sandboxes (self-service)
@@ -116,7 +116,7 @@ relocating.
 
 - Terraform `>= 1.9`. `azurerm` `~> 4.0`, `time` `~> 0.12`. Pin with `~>` and commit
   `.terraform.lock.hcl`.
-- No submodules. Five resources with no repetition do not justify a module layer. Introduce
+- No submodules. Six resources with no repetition do not justify a module layer. Introduce
   one when there is a second caller — the first candidate is multiple container apps per
   environment.
 - No `for_each` over environments — ever.

@@ -1,0 +1,56 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment name, e.g. dev-ryan, staging, prod, prod-dr
+        required: true
+        type: string
+  push:
+    branches: [main]
+
+# Reusable workflows can only narrow these, never widen them.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve environment
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      env_name: ${{ steps.resolve.outputs.env_name }}
+      env_class: ${{ steps.resolve.outputs.env_class }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # A dispatch names its environment; a merge to main always means staging.
+      - name: Resolve
+        id: resolve
+        run: ./scripts/tf.sh resolve "${{ inputs.environment || 'staging' }}" >> "$GITHUB_OUTPUT"
+
+  plan:
+    name: Plan
+    needs: resolve
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      env_name: ${{ needs.resolve.outputs.env_name }}
+      action: plan
+      gh_environment: ${{ needs.resolve.outputs.env_class }}-plan
+      upload_plan: true
+
+  apply:
+    name: Apply
+    needs: [resolve, plan]
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      env_name: ${{ needs.resolve.outputs.env_name }}
+      action: apply
+      # The gated environment. For prod this is where the run waits for a reviewer.
+      gh_environment: ${{ needs.resolve.outputs.env_class }}
+      download_plan: true
+      verify: app

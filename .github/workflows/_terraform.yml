@@ -1,0 +1,176 @@
+# Reusable workflow. This file lives here because GitHub requires workflow_call
+# workflows to be under .github/workflows/. It deliberately contains no
+# Terraform logic: every terraform command lives in scripts/tf.sh, so CI and a
+# developer's laptop run the same code path.
+name: terraform
+
+on:
+  workflow_call:
+    inputs:
+      env_name:
+        description: Environment to operate on, e.g. dev-ryan
+        required: true
+        type: string
+      action:
+        description: tf.sh action - plan, plan-destroy or apply
+        required: true
+        type: string
+      gh_environment:
+        description: GitHub Environment supplying credentials and any approval gate
+        required: true
+        type: string
+      upload_plan:
+        description: Upload the plan as an artifact for a later apply job
+        required: false
+        type: boolean
+        default: false
+      download_plan:
+        description: Apply the plan produced by an earlier job rather than re-planning
+        required: false
+        type: boolean
+        default: false
+      verify:
+        description: Post-apply check - "app" asserts HTTP 200, "absent" asserts the environment is gone
+        required: false
+        type: string
+        default: ""
+    outputs:
+      app_url:
+        description: Public URL of the deployed container app
+        value: ${{ jobs.terraform.outputs.app_url }}
+
+jobs:
+  terraform:
+    name: ${{ inputs.action }} ${{ inputs.env_name }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.gh_environment }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    # Applies to the same environment queue; applies to different environments
+    # run in parallel.
+    concurrency:
+      group: terraform-${{ inputs.env_name }}
+      cancel-in-progress: false
+
+    outputs:
+      app_url: ${{ steps.tf_outputs.outputs.app_url }}
+
+    env:
+      TF_IN_AUTOMATION: "1"
+      # The azurerm provider and the azurerm backend both authenticate with the
+      # job's OIDC token. No client secret exists.
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      PLATFORM_RESOURCE_GROUP: ${{ vars.PLATFORM_RESOURCE_GROUP }}
+      TFSTATE_STORAGE_ACCOUNT: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+      TFSTATE_CONTAINER: ${{ vars.TFSTATE_CONTAINER }}
+      ACR_NAME: ${{ vars.ACR_NAME }}
+      DEPLOYED_BY: ${{ github.actor }}
+      COMMIT_SHA: ${{ github.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - name: Azure login
+        uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3.0.2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve environment
+        id: resolve
+        run: ./scripts/tf.sh resolve "${{ inputs.env_name }}" >> "$GITHUB_OUTPUT"
+
+      # An apply consumes the plan a human reviewed. It never re-plans.
+      - name: Download reviewed plan
+        if: inputs.download_plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tfplan-${{ inputs.env_name }}
+          path: terraform
+
+      - name: Run terraform
+        run: ./scripts/tf.sh "${{ inputs.action }}" "${{ inputs.env_name }}"
+
+      - name: Upload plan
+        if: inputs.upload_plan
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tfplan-${{ inputs.env_name }}
+          path: |
+            terraform/tfplan
+            terraform/tfplan.txt
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## \`${{ inputs.action }}\` — \`${{ inputs.env_name }}\` (${{ steps.resolve.outputs.env_class }})"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Variables | \`${{ steps.resolve.outputs.tfvars_path }}\` |"
+            echo "| State key | \`${{ steps.resolve.outputs.state_key }}\` |"
+            echo "| Gate | \`${{ inputs.gh_environment }}\` |"
+            echo
+            if [ -f terraform/tfplan.txt ]; then
+              echo '<details><summary>Plan</summary>'
+              echo
+              echo '```terraform'
+              head -c 200000 terraform/tfplan.txt
+              echo '```'
+              echo '</details>'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Capture outputs
+        id: tf_outputs
+        if: inputs.action == 'apply' && inputs.verify != 'absent'
+        run: |
+          url="$(./scripts/tf.sh output "${{ inputs.env_name }}" -raw app_url)"
+          echo "app_url=${url}" >> "$GITHUB_OUTPUT"
+          echo "### Deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "<${url}>" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify the app responds
+        if: inputs.verify == 'app'
+        run: |
+          url="${{ steps.tf_outputs.outputs.app_url }}"
+          echo "Waiting for ${url} ..."
+          for attempt in $(seq 1 30); do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "${url}" || true)"
+            if [ "${code}" = "200" ]; then
+              echo "HTTP 200 after ${attempt} attempt(s)"
+              exit 0
+            fi
+            echo "  attempt ${attempt}: HTTP ${code:-none}"
+            sleep 10
+          done
+          echo "::error::${url} did not return HTTP 200 within 5 minutes"
+          exit 1
+
+      - name: Verify the environment is gone
+        if: inputs.verify == 'absent'
+        run: |
+          remaining="$(az group list --tag environment="${{ inputs.env_name }}" \
+            --query "length([?tags.managed_by=='terraform'])" -o tsv)"
+          if [ "${remaining}" != "0" ]; then
+            echo "::error::${remaining} resource group(s) still tagged environment=${{ inputs.env_name }}"
+            exit 1
+          fi
+          echo "No resource groups remain for ${{ inputs.env_name }}"

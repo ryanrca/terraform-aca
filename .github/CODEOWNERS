@@ -1,0 +1,7 @@
+# Sandboxes are self-service. Everything else needs platform review.
+/terraform/     @ryanrca/platform-team
+/scripts/       @ryanrca/platform-team
+/.github/       @ryanrca/platform-team
+/envs/staging/  @ryanrca/platform-team
+/envs/prod/     @ryanrca/platform-team
+# /envs/dev/ intentionally unowned — developers self-serve

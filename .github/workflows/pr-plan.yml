@@ -1,0 +1,159 @@
+name: Terraform plan
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - name: Set up TFLint
+        uses: terraform-linters/setup-tflint@6e1e0642c0289bd619021bf6b34e3c08ed1e005a # v6.3.0
+
+      # fmt, validate and tflint. Needs no Azure credentials and no environment.
+      - name: Lint
+        run: ./scripts/tf.sh lint
+
+  resolve:
+    name: Resolve affected environments
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.affected.outputs.matrix }}
+      count: ${{ steps.affected.outputs.count }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # A change to a single tfvars file plans that environment. A change to the
+      # core or to tf.sh plans every environment, so core changes are reviewed
+      # against real production state before merge.
+      - name: Determine affected environments
+        id: affected
+        run: |
+          set -euo pipefail
+          base="origin/${{ github.base_ref }}"
+          changed="$(git diff --name-only "${base}...HEAD")"
+          echo "Changed files:"; echo "${changed}" | awk '{print "  " $0}'
+
+          if echo "${changed}" | grep -qE '^(terraform/|scripts/tf\.sh$)'; then
+            echo "Core changed - planning every environment."
+            files="$(ls envs/*/*.tfvars)"
+          else
+            files="$(echo "${changed}" | grep -E '^envs/.*\.tfvars$' || true)"
+          fi
+
+          rows=""
+          while IFS= read -r f; do
+            [ -n "${f}" ] || continue
+            [ -f "${f}" ] || continue                        # skip deletions
+            name="$(basename "${f}" .tfvars)"
+            case "${name}" in *CHANGEME*|*template*) continue ;; esac
+            rows="${rows}${name} $(basename "$(dirname "${f}")")"$'\n'
+          done <<< "${files}"
+
+          matrix="$(printf '%s' "${rows}" | jq -R -s -c \
+            'split("\n") | map(select(length > 0) | split(" ") | {env_name: .[0], env_class: .[1]})')"
+          count="$(printf '%s' "${matrix}" | jq 'length')"
+
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+          echo "count=${count}"   >> "$GITHUB_OUTPUT"
+          echo "Planning ${count} environment(s): ${matrix}"
+
+  plan:
+    name: Plan
+    needs: resolve
+    if: needs.resolve.outputs.count != '0'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.resolve.outputs.matrix) }}
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      env_name: ${{ matrix.env_name }}
+      action: plan
+      gh_environment: ${{ matrix.env_class }}-plan
+      upload_plan: true
+
+  comment:
+    name: Comment on the PR
+    needs: [resolve, plan]
+    if: always() && needs.resolve.outputs.count != '0'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Download plans
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: tfplan-*
+          path: plans
+
+      - name: Post the plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Terraform plan"
+            echo
+            for dir in plans/tfplan-*/; do
+              [ -f "${dir}tfplan.txt" ] || continue
+              env_name="$(basename "${dir}")"; env_name="${env_name#tfplan-}"
+              summary="$(grep -E '^(Plan:|No changes)' "${dir}tfplan.txt" | tail -1 || echo 'see run log')"
+              echo "<details><summary><b>${env_name}</b> — ${summary}</summary>"
+              echo
+              echo '```terraform'
+              head -c 55000 "${dir}tfplan.txt"
+              echo '```'
+              echo
+              echo "</details>"
+              echo
+            done
+            echo "_[Full plans and artifacts](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})_"
+          } > comment.md
+          gh pr comment "${{ github.event.number }}" --body-file comment.md --edit-last --create-if-none
+
+  # Stable name for branch protection. The matrix job names vary by environment,
+  # so this is the check to mark as required.
+  terraform-plan:
+    name: terraform-plan
+    needs: [lint, resolve, plan]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report
+        run: |
+          for job in lint plan; do
+            case "${job}" in
+              lint) result="${{ needs.lint.result }}" ;;
+              plan) result="${{ needs.plan.result }}" ;;
+            esac
+            echo "${job}: ${result}"
+            case "${result}" in
+              success|skipped) ;;
+              *) echo "::error::${job} did not succeed (${result})"; exit 1 ;;
+            esac
+          done
