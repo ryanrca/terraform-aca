@@ -6,7 +6,7 @@ files.
 
 - Developers stand up and tear down their own sandbox from the Actions tab.
 - Staging and production run the same code with different inputs, behind an approval gate.
-- DR is one more variables file with a different region.
+- DR is simply another variables file with a different region.
 - No secrets — GitHub authenticates to Azure with OIDC.
 
 > **Status:** specification phase. These documents are complete and under review; the
@@ -21,7 +21,7 @@ files.
 ```
 envs/dev/dev-ryan.tfvars  ─┐
 envs/staging/staging.tfvars┤
-envs/prod/prod.tfvars     ─┼──▶  terraform/  (one core, unchanged)  ──▶  Azure
+envs/prod/prod.tfvars     ─┼──▶  terraform/*.tf ──▶  Azure
 envs/prod/prod-dr.tfvars  ─┘            │
                                         └─ state key = <env_name>.tfstate
 ```
@@ -463,8 +463,8 @@ environment in the Actions UI, and the apply consumes that exact plan.
 **A new environment is one new file:** `envs/dev/dev-<name>.tfvars` (no review),
 `envs/staging/` or `envs/prod/` (platform review via CODEOWNERS).
 
-`confirm` must exactly match `environment` or the destroy fails immediately. Production
-destroys wait on the same reviewer that production deploys do.
+`confirm` must exactly match `environment` or the destroy fails immediately. **Production
+destroys wait on the same reviewer that production deploys do.**
 
 ---
 

@@ -11,13 +11,12 @@ in Terraform and delivered by GitHub Actions. One Terraform core serves every en
 environments differ only by a variables file.
 
 The deliverable is a **proof of concept**: a publicly reachable hello-world container,
-deployed entirely through the pipeline. The app is trivial on purpose — the PoC proves the
-deployment platform, not the app. Mapping this onto a real production estate is a later
-exercise.
+deployed entirely through the pipeline. The PoC proves the deployment platform, not the 
+app.
 
 **In scope:** the Terraform core; the variables-file environment model; remote state;
-plan/deploy/destroy workflows with developer self-service; keyless OIDC auth; a bootstrap
-procedure from a brand-new Azure tenant.
+plan/deploy/destroy workflows with developer self-service using GitHub Actions; keyless OIDC auth; 
+a bootstrap procedure from a brand-new Azure tenant.
 
 **Out of scope:** application code and build pipeline; VNet integration, private endpoints,
 WAF; custom domains and Front Door; databases or any stateful service; multi-subscription
@@ -37,31 +36,30 @@ landing zones.
 
 ## 3. Architecture
 
-The platform has two layers. The distinction is what keeps an environment cheap to create
-and safe to destroy.
+The platform has two layers. This keeps environments cheap to create and safe to destroy.
 
 ### 3.1 Shared platform layer — bootstrapped once, never managed by the core
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ Resource Group   rg-acaplat-platform-eus2                     │
-│                                                               │
-│  Storage Account  stacaplattf<suffix>                         │
-│    Container  tfstate/                                        │
-│      dev-ryan.tfstate   staging.tfstate                       │
-│      dev-alice.tfstate  prod.tfstate   prod-dr.tfstate        │
-│    versioning on · soft-delete 30d · shared-key access OFF     │
-│                                                               │
-│  Container Registry     cracaplat<suffix>                     │
-│  User-Assigned Identity id-acaplat-platform  (holds AcrPull)  │
+│ Resource Group   rg-acaplat-platform-eus2                    │
+│                                                              │
+│  Storage Account  stacaplattf<suffix>                        │
+│    Container  tfstate/                                       │
+│      dev-ryan.tfstate   staging.tfstate                      │
+│      dev-alice.tfstate  prod.tfstate   prod-dr.tfstate       │
+│    versioning on · soft-delete 30d · shared-key access OFF   │
+│                                                              │
+│  Container Registry     cracaplat<suffix>                    │
+│  User-Assigned Identity id-acaplat-platform  (holds AcrPull) │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 | Resource | Why it is shared, not per-environment |
 |---|---|
-| State storage | Must exist before Terraform runs and survive every environment's destruction. The core cannot manage its own backend. |
-| Container registry | Staging and production must pull the identical digest a sandbox was tested with. |
-| Managed identity | Creating it per environment would mean the core also creates its `AcrPull` role assignment, requiring `User Access Administrator` in CI. Bootstrapping it removes that privilege entirely — **the core creates zero role assignments.** |
+| State storage | Must exist before Terraform runs and survives after environment's destruction. |
+| Container registry | Staging and production must pull identical containers the sandbox was tested with. |
+| Managed identity | Creating it per environment would mean the core also creates its `AcrPull` role assignment, requiring `User Access Administrator` in CI. Bootstrapping it removes that privilege — **the core creates zero role assignments.** |
 
 ### 3.2 Environment layer — created and destroyed per environment
 
@@ -70,19 +68,19 @@ and safe to destroy.
       │  HTTPS (managed cert on *.<region>.azurecontainerapps.io)
       ▼
 ┌────────────────────────────────────────────────────────────────┐
-│ Resource Group   rg-acaplat-<env>-<region>                       │
-│                                                                 │
+│ Resource Group   rg-acaplat-<env>-<region>                     │
+│                                                                │
 │  ┌───────────────────────────────────────────────────────────┐ │
-│  │ Container App Environment  cae-acaplat-<env>-<region>      │ │
-│  │   Consumption profile, scale-to-zero capable                │ │
-│  │   ┌─────────────────────────────────────────────────────┐  │ │
-│  │   │ Container App  ca-<app>-<env>                        │  │ │
-│  │   │   external ingress · replicas min..max               │  │ │
-│  │   │   identity: SHARED id-acaplat-platform ──────────────┼──┼─┼─▶ ACR
-│  │   └─────────────────────────────────────────────────────┘  │ │
+│  │ Container App Environment  cae-acaplat-<env>-<region>     │ │
+│  │   Consumption profile, scale-to-zero capable              │ │
+│  │   ┌─────────────────────────────────────────────────────┐ │ │
+│  │   │ Container App  ca-<app>-<env>                       │ │ │
+│  │   │   external ingress · replicas min..max              │ │ │
+│  │   │   identity: SHARED id-acaplat-platform ─────────────┼─┼─┼─▶ ACR
+│  │   └─────────────────────────────────────────────────────┘ │ │
 │  └───────────────────────────────────────────────────────────┘ │
-│  Log Analytics Workspace  log-acaplat-<env>-<region>            │
-│  Management Lock          CanNotDelete   (staging/prod only)    │
+│  Log Analytics Workspace  log-acaplat-<env>-<region>           │
+│  Management Lock          CanNotDelete   (staging/prod only)   │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -101,13 +99,12 @@ resources; no submodules until there is a second caller.
 | `staging` | `staging` | none (auto on merge to `main`) | none | none | yes | min replicas 1 |
 | `prod` | `prod`, `prod-dr` | **required** | **required + typed confirmation** | none | yes | min replicas 2 |
 
-Class is derived from the directory (`envs/dev/`, `envs/staging/`, `envs/prod/`) and also
-asserted in the file as `env_class`; the pipeline fails if they disagree. This makes
-CODEOWNERS enforcement mechanical.
+Class is derived from the directory (`envs/dev/`, `envs/staging/`, `envs/prod/`) and 
+asserted in the file as `env_class`; the pipeline fails if they disagree.
 
 ### 4.2 The contract
 
-An environment is fully described by one variables file. `env_name` (unique, lowercase,
+An environment is described by one variables file. `env_name` (unique, lowercase,
 `a-z0-9-`, 3–22 chars), `env_class`, `location`, and `owner` are required; everything else
 defaults. A minimal sandbox file is five lines.
 
@@ -140,14 +137,14 @@ scripts/bootstrap-azure.sh             one-time Azure setup
 | GitHub Actions workflows | Every environment | The supported path. The only way staging and production change. |
 | `scripts/tf.sh` | Sandboxes only | Local iteration. Not a deployment mechanism for shared environments. |
 
-`tf.sh` is the implementation, not a wrapper around one: it resolves the tfvars path from
+`tf.sh` is the implementation. It resolves the tfvars path from
 an environment name, cross-checks the class, runs `terraform init -reconfigure` with the
 right backend key, then `fmt`, `validate`, and `plan`/`apply`/`destroy`.
 
 `_terraform.yml` lives in `.github/workflows/` because GitHub requires `workflow_call`
-workflows to be there. That is acceptable only because it holds no logic: it does OIDC
-login, the environment gate, plan artifacts, concurrency, and the run summary, and calls
-`tf.sh` in one line per job. CI and a laptop therefore run the same code path.
+workflows to be there. That is acceptable because it holds no logic: it does OIDC
+login, the environment gate, plan artifacts, concurrency, the run summary, and calls
+`tf.sh` in one line per job. CI and a Devs can therefore run the same code path.
 
 ### 5.3 Design rules
 
@@ -155,7 +152,7 @@ login, the environment gate, plan artifacts, concurrency, and the run summary, a
    Differences are variables with dev-safe defaults, set in the tfvars.
 2. **No Terraform workspaces.** State isolation is the backend `key`, passed at init.
 3. **No shared resources in the core.** Anything that outlives an environment is
-   bootstrapped and read with a data source.
+   handled at the platform layer, and read with a data source.
 4. **Validate at the boundary.** `variables.tf` carries `validation` blocks, including
    cross-variable invariants (dev must have a TTL; prod must be locked), so a bad tfvars
    fails in seconds without touching Azure.
@@ -194,8 +191,7 @@ which is what lets one core serve N environments and why `tf.sh` always passes
 | `app_min_replicas` / `app_max_replicas` | number | `0` / `1` | `0` = scale to zero |
 | `app_env_vars` | map(string) | `{}` | Non-secret environment variables |
 
-Ingress is always external — a platform property, not an environment choice, so not a
-variable.
+Ingress is external — an ACA platform property.
 
 **Sandbox** (`envs/dev/dev-ryan.tfvars`):
 
@@ -311,28 +307,30 @@ Roughly five minutes to first URL, most of it ACA environment provisioning.
 
 `expires_at` is tagged at apply time from `ttl_hours`. For the PoC it is advisory — it
 makes abandoned sandboxes visible to `az group list --tag env_class=dev`. Automatic reaping
-is a scheduled workflow dispatching `destroy.yml`; straightforward to add, not needed to
-prove the platform.
+is a scheduled workflow dispatching `destroy.yml`; straightforward to add, not built in 
+V1 of this POC.
 
 ## 9. Disaster recovery
 
-DR is not a mechanism — it is a second environment in a second region, defined by one
+DR is a second environment in a second region, defined by one
 variables file differing in `env_name` and `location`. It has its own state, its own
 resource group, and pulls the identical image from the shared registry. It can run warm
 (deployed, minimal replicas) or cold (deployed on demand).
+
+This POC makes no attempt to migrate application state or DB into the new DR env.
 
 | Mode | RTO | RPO | Cost |
 |---|---|---|---|
 | Cold — deploy on demand | ~10 min (one pipeline run) | N/A (stateless) | ~0 |
 | Warm — always deployed | < 5 min (traffic switch) | N/A (stateless) | one small ACA environment |
 
-For the PoC `prod-dr` is defined but not continuously deployed; the DR drill *is* running
+For this PoC `prod-dr` is defined but not continuously deployed; the DR drill *is* running
 the Deploy workflow against it.
 
 **Not yet covered:** traffic steering is manual — each environment has its own
-`*.azurecontainerapps.io` hostname, and Front Door is the next step. The shared registry is
-single-region, so geo-replication is required before this is a real DR posture. Once state
-exists, DR stops being free.
+`*.azurecontainerapps.io` hostname, and Front Door is out of scope for this POC. 
+The shared registry is single-region, so geo-replication is required before this 
+is a real DR solution.
 
 ## 10. Security
 
@@ -371,8 +369,7 @@ caps its own workspace via `log_daily_quota_gb`.
 Container `stdout`/`stderr` and ACA system logs go to the environment's own **Log
 Analytics** workspace (`ContainerAppConsoleLogs_CL`, `ContainerAppSystemLogs_CL`). One
 workspace per environment means sandbox log volume cannot affect production cost or
-retention, and the workspace dies with the environment. Application Insights waits until
-there is an application worth tracing.
+retention, and the workspace dies with the environment.
 
 ## 13. Testing
 
