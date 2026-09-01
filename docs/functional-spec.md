@@ -86,8 +86,8 @@ The platform has two layers. This keeps environments cheap to create and safe to
 
 Core Terraform: `azurerm_resource_group`, `azurerm_log_analytics_workspace`,
 `azurerm_container_app_environment`, `azurerm_container_app`, `azurerm_management_lock`,
-`time_offset` — plus data sources reading the shared registry and identity. Five managed
-resources; no submodules until there is a second caller.
+`time_offset` — plus data sources reading the shared registry and identity. Five Azure
+resources plus a `time_offset` helper; no submodules until there is a second caller.
 
 ## 4. Environment model
 

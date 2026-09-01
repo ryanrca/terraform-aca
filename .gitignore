@@ -1,0 +1,20 @@
+# Terraform
+.terraform/
+.terraform.tfstate.lock.info
+tfplan
+tfplan.txt
+*.tfplan
+crash.log
+crash.*.log
+
+# Never commit state. It lives in Azure Blob Storage.
+*.tfstate
+*.tfstate.*
+
+# Local overrides
+*.auto.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.env

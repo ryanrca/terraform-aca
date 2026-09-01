@@ -1,0 +1,64 @@
+name: Destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment name to destroy, e.g. dev-ryan
+        required: true
+        type: string
+      confirm:
+        description: Type the environment name again to confirm
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  guard:
+    name: Confirm and resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      env_name: ${{ steps.resolve.outputs.env_name }}
+      env_class: ${{ steps.resolve.outputs.env_class }}
+    steps:
+      - name: Check the typed confirmation
+        run: |
+          if [ "${{ inputs.environment }}" != "${{ inputs.confirm }}" ]; then
+            echo "::error::confirm must exactly match environment. Got '${{ inputs.confirm }}' for '${{ inputs.environment }}'."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve
+        id: resolve
+        run: ./scripts/tf.sh resolve "${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+
+  plan:
+    name: Plan destroy
+    needs: guard
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      env_name: ${{ needs.guard.outputs.env_name }}
+      action: plan-destroy
+      gh_environment: ${{ needs.guard.outputs.env_class }}-plan
+      upload_plan: true
+
+  apply:
+    name: Destroy
+    needs: [guard, plan]
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      env_name: ${{ needs.guard.outputs.env_name }}
+      action: apply
+      # Same gate as deployment: destroying prod needs the reviewer that
+      # deploying prod needs.
+      gh_environment: ${{ needs.guard.outputs.env_class }}
+      download_plan: true
+      verify: absent

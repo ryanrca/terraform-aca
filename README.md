@@ -223,9 +223,19 @@ Three app registrations, one per class. Each gets two federated credentials — 
 `<class>-plan` environment and the gated `<class>` environment — plus `Contributor` and
 write access to the state container.
 
+Derive these from the git remote rather than typing them — a placeholder left
+unsubstituted here produces federated credentials that look fine and never match
+a real token.
+
+Do **not** name these `GH_REPO` or `GH_ORG`: `GH_REPO` is reserved by the `gh`
+CLI as a target-repository override in `OWNER/REPO` form, and setting it breaks
+every `gh` command in Part 2.
+
 ```bash
-export GH_ORG="<your-github-org-or-username>"
-export GH_REPO="terraform-aca"
+remote="$(git remote get-url origin)"
+export REPO_OWNER="$(basename "$(dirname "$remote")" | sed 's/.*://')"
+export REPO_NAME="$(basename "$remote" .git)"
+echo "REPO_OWNER=$REPO_OWNER  REPO_NAME=$REPO_NAME"
 ```
 
 ```bash
@@ -250,7 +260,7 @@ create_identity() {
 {
   "name": "gh-${ghenv}",
   "issuer": "https://token.actions.githubusercontent.com",
-  "subject": "repo:${GH_ORG}/${GH_REPO}:environment:${ghenv}",
+  "subject": "repo:${REPO_OWNER}/${REPO_NAME}:environment:${ghenv}",
   "description": "GitHub Actions ${ghenv}",
   "audiences": ["api://AzureADTokenExchange"]
 }
@@ -274,7 +284,19 @@ for class in dev staging prod; do
 done
 ```
 
-Verify each identity has exactly two subjects:
+GitHub presents one of two OIDC subject formats, depending on the repository's
+settings:
+
+```
+classic    repo:OWNER/REPO:environment:NAME
+ID-based   repo:OWNER@<ownerId>/REPO@<repoId>:environment:NAME     (rename-proof)
+```
+
+The script registers **both**, because which one arrives is not something you
+control from Azure, and a mismatch surfaces only as an opaque `AADSTS700213` at
+the first deploy. Registering both costs nothing.
+
+Verify each identity has four subjects (two formats × two environments):
 
 ```bash
 while read -r class app_id; do
@@ -303,9 +325,23 @@ client secret to record, because there is none.
 
 ## Part 2 — GitHub configuration
 
+`GH_REPO` and `GH_HOST` are reserved by the `gh` CLI: `GH_REPO` overrides the
+target repository for every command and must be `OWNER/REPO`. If one is set to
+anything else — including a bare repository name left over from an earlier
+shell — every `gh` command in this Part fails with
+`expected the "[HOST/]OWNER/REPO" format`. Clear them first.
+
 ```bash
+unset GH_REPO GH_HOST
+
+: "${REPO_OWNER:?set REPO_OWNER first — see step 1.6}"
+: "${REPO_NAME:?set REPO_NAME first — see step 1.6}"
+
 gh auth login
-gh repo set-default "$GH_ORG/$GH_REPO"
+gh repo set-default "$REPO_OWNER/$REPO_NAME"
+
+# Should print ryanrca/terraform-aca, resolved from the git remote.
+gh repo view --json nameWithOwner --jq .nameWithOwner
 ```
 
 ### 2.1 Environments
@@ -314,10 +350,26 @@ Six: an ungated `<class>-plan` so a plan is always produced for review, and `<cl
 carries the gate for apply and destroy.
 
 ```bash
+: "${REPO_OWNER:?set REPO_OWNER first — see step 1.6}"
+: "${REPO_NAME:?set REPO_NAME first — see step 1.6}"
+case "$REPO_OWNER$REPO_NAME" in *'<'*|*'>'*) echo "REPO_OWNER/REPO_NAME still hold a placeholder" >&2; return 1 2>/dev/null || exit 1 ;; esac
+
 for e in dev-plan dev staging-plan staging prod-plan prod; do
-  gh api -X PUT "repos/$GH_ORG/$GH_REPO/environments/$e" >/dev/null
-  echo "created environment: $e"
+  if gh api -X PUT "repos/$REPO_OWNER/$REPO_NAME/environments/$e" --silent; then
+    echo "created environment: $e"
+  else
+    echo "FAILED to create environment: $e" >&2
+  fi
 done
+```
+
+A 404 here means one of three things: `REPO_OWNER`/`REPO_NAME` are unset in the current
+shell, the repository has not been pushed to GitHub yet, or the repository is
+**private on a Free plan** — GitHub Environments require a public repository, or
+GitHub Pro/Team/Enterprise for a private one. Check with:
+
+```bash
+gh api "repos/$REPO_OWNER/$REPO_NAME" --jq '{full_name, visibility, plan: (.owner.plan.name // "not visible")}'
 ```
 
 ### 2.2 Variables
@@ -339,32 +391,50 @@ done < /tmp/acaplat-identities.txt
 
 ### 2.3 Gates
 
-Only production is gated. Get a reviewer ID with `gh api users/<login> --jq .id`, or a team
-ID with `gh api orgs/$GH_ORG/teams/<team-slug> --jq .id` (then `"type": "Team"`).
+Only production is gated. The reviewer must be a real numeric ID, so derive it
+rather than typing one in. Note the **unquoted** heredoc delimiter on the first
+command — `<<JSON`, not `<<'JSON'`. A quoted delimiter stops the shell expanding
+the variable and GitHub answers `400 Problems parsing JSON`.
 
 ```bash
-gh api -X PUT "repos/$GH_ORG/$GH_REPO/environments/prod" --input - <<'JSON'
+# Yourself. For a team: gh api orgs/$REPO_OWNER/teams/<slug> --jq .id, then "type": "Team".
+REVIEWER_ID="$(gh api user --jq .id)"
+echo "reviewer id: $REVIEWER_ID"
+
+gh api -X PUT "repos/$REPO_OWNER/$REPO_NAME/environments/prod" --input - <<JSON
 {
   "wait_timer": 0,
-  "prevent_self_review": true,
-  "reviewers": [{"type": "User", "id": <REVIEWER_USER_ID>}],
+  "prevent_self_review": false,
+  "reviewers": [{"type": "User", "id": ${REVIEWER_ID}}],
   "deployment_branch_policy": {"protected_branches": true, "custom_branch_policies": false}
 }
 JSON
 
-gh api -X PUT "repos/$GH_ORG/$GH_REPO/environments/staging" --input - <<'JSON'
+gh api -X PUT "repos/$REPO_OWNER/$REPO_NAME/environments/staging" --input - <<'JSON'
 {
   "deployment_branch_policy": {"protected_branches": true, "custom_branch_policies": false}
 }
 JSON
 ```
 
+`prevent_self_review` is **false** on purpose. On a one-person PoC you are both
+the deployer and the only reviewer, and `true` would make every production run
+wait forever on an approval you are not permitted to give. Set it to `true` once
+a second reviewer exists.
+
 `dev` and all three `*-plan` environments are deliberately ungated.
+
+Verify the gate took effect:
+
+```bash
+gh api "repos/$REPO_OWNER/$REPO_NAME/environments/prod" \
+  --jq '{name, reviewers: [.protection_rules[] | select(.type=="required_reviewers") | .reviewers[].reviewer.login]}'
+```
 
 ### 2.4 Branch protection and CODEOWNERS
 
 ```bash
-gh api -X PUT "repos/$GH_ORG/$GH_REPO/branches/main/protection" --input - <<'JSON'
+gh api -X PUT "repos/$REPO_OWNER/$REPO_NAME/branches/main/protection" --input - <<'JSON'
 {
   "required_status_checks": {"strict": true, "contexts": ["terraform-plan"]},
   "enforce_admins": false,
@@ -376,15 +446,22 @@ gh api -X PUT "repos/$GH_ORG/$GH_REPO/branches/main/protection" --input - <<'JSO
 JSON
 ```
 
-`.github/CODEOWNERS` keeps sandboxes self-service while shared environments need review:
+`.github/CODEOWNERS` keeps sandboxes self-service while shared environments need
+review. **The file already exists in this repository** — it is not something to
+create, and the block below is file content, not shell commands. Pasting it into
+a shell makes zsh treat `<ORG>` as an input redirect.
 
-```
-/terraform/     @<ORG>/platform-team
-/scripts/       @<ORG>/platform-team
-/.github/       @<ORG>/platform-team
-/envs/staging/  @<ORG>/platform-team
-/envs/prod/     @<ORG>/platform-team
-# /envs/dev/ intentionally unowned — developers self-serve
+Owners must match the account type. A team reference (`@org/team-slug`) is valid
+only on an organisation-owned repository; on a personal account, use the user:
+
+```bash
+# Personal account (the default here)
+sed -i 's|@[^ ]*/platform-team|@'"$REPO_OWNER"'|' .github/CODEOWNERS
+
+# Organisation: point at a team instead
+# sed -i 's|@'"$REPO_OWNER"'$|@'"$REPO_OWNER"'/platform-team|' .github/CODEOWNERS
+
+cat .github/CODEOWNERS
 ```
 
 ---
@@ -393,27 +470,88 @@ JSON
 
 ### 3.1 Verify OIDC first
 
-The cheapest test of the whole identity chain. Push as
-`.github/workflows/oidc-check.yml`, run it against `dev-plan`, then delete it.
+The cheapest test of the whole identity chain: no Terraform, no Azure resources,
+no state. It proves that the federated credential subject, the GitHub Environment
+name, and the repository variables all agree. Do this before anything else.
 
-```yaml
+**1. Create the file.**
+
+```bash
+cat > .github/workflows/oidc-check.yml <<'YAML'
 name: OIDC check
-on: { workflow_dispatch: }
-permissions: { id-token: write, contents: read }
+
+# push, not just workflow_dispatch: a workflow_dispatch workflow does not appear
+# in the Actions UI until it exists on the DEFAULT branch, so on a feature branch
+# there would be nothing to click.
+on: [push, workflow_dispatch]
+
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
     environment: dev-plan
     steps:
-      - uses: azure/login@v2
+      - uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3.0.2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - run: az account show -o table
+      - run: az account show --output table
+YAML
 ```
 
-`AADSTS70021` here means the federated subject and the environment name disagree.
+**2. Commit and push it.** The push is what triggers the run.
+
+```bash
+git add .github/workflows/oidc-check.yml
+git commit -m "chore: temporary OIDC pre-flight check"
+git push
+```
+
+**3. Watch the run.** It takes about 20 seconds to appear.
+
+```bash
+gh run list --workflow=oidc-check.yml
+gh run watch
+```
+
+**4. What success looks like.** The `az account show` step prints your
+subscription, which means Azure accepted a token minted by GitHub:
+
+```
+Name              CloudName    SubscriptionId                        State    IsDefault
+----------------  -----------  ------------------------------------  -------  -----------
+Your Subscription AzureCloud   00000000-0000-0000-0000-000000000000  Enabled  True
+```
+
+Confirm the job actually ran green:
+
+```bash
+gh run list --workflow=oidc-check.yml --json conclusion,headBranch --jq '.[0]'
+# expect: {"conclusion":"success","headBranch":"<your branch>"}
+```
+
+**5. If it fails**, read the error before changing anything:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| No run appears at all | The workflow file has a YAML error, or it was never pushed | `gh run list --workflow=oidc-check.yml`; check the Actions tab, which shows parse errors against the file |
+| `AADSTS70021: No matching federated identity record found` | The credential subject does not match `repo:OWNER/REPO:environment:dev-plan` | `az ad app federated-credential list --id <dev app id> --query "[].subject" -o tsv` and compare character for character |
+| `Az CLI Login failed` with an empty client id | `AZURE_CLIENT_ID` is missing on the `dev-plan` environment | `gh variable get AZURE_CLIENT_ID --env dev-plan`; re-run step 2.2 if empty |
+| `Error: Value cannot be null. (Parameter 'tenantId')` | Repository variables were never set | `gh variable list`; re-run step 2.2 |
+| Job waits on approval | A protection rule was applied to `dev-plan` | `dev-plan` must be ungated — see step 2.3 |
+
+**6. Delete it once green.** It has served its purpose and grants `id-token:
+write` on every push.
+
+```bash
+git rm .github/workflows/oidc-check.yml
+git commit -m "chore: remove temporary OIDC pre-flight check"
+git push
+```
 
 ### 3.2 Create a sandbox and deploy
 
@@ -497,7 +635,7 @@ the correct backend key, and skipping that silently reuses the previous environm
 
 | Symptom | Fix |
 |---|---|
-| `AADSTS70021: No matching federated identity record found` | The job's `environment:` must exactly equal the credential subject's environment segment. Check with `az ad app federated-credential list --id <APP_ID> --query "[].subject" -o tsv` |
+| `AADSTS700213 / AADSTS70021: No matching federated identity record found` | Compare the `subject claim` printed in the failing job's log against `az ad app federated-credential list --id <APP_ID> --query "[].subject" -o tsv`. If the claim contains numeric IDs (`repo:owner@123/repo@456:...`), your repository issues ID-based subjects — re-run `scripts/bootstrap-azure.sh` with `gh` authenticated to register that form |
 | `Error: building AzureRM Client: … ARM_SUBSCRIPTION_ID` | azurerm 4.x needs an explicit subscription — export `ARM_SUBSCRIPTION_ID` |
 | `403` / `AuthorizationPermissionMismatch` at `terraform init` | Grant `Storage Blob Data Contributor` on the **container**, not just `Contributor` on the account. Allow ~60s propagation |
 | `KeyBasedAuthenticationNotPermitted` from `az storage` | Shared-key access is disabled by design — add `--auth-mode login` |

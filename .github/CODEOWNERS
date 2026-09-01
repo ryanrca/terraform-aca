@@ -1,0 +1,12 @@
+# Sandboxes are self-service. Everything else needs platform review.
+#
+# This repository is owned by a personal account, so ownership is a user.
+# When it moves to an organisation, replace @ryanrca with @<org>/platform-team —
+# team references are only valid on organisation-owned repositories.
+
+/terraform/     @ryanrca
+/scripts/       @ryanrca
+/.github/       @ryanrca
+/envs/staging/  @ryanrca
+/envs/prod/     @ryanrca
+# /envs/dev/ intentionally unowned — developers self-serve
