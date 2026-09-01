@@ -1,0 +1,8 @@
+SUMMARY
+AZURE_TENANT_ID         = 064ef55b-8268-4e1e-bbcd-752eec5ff802
+AZURE_SUBSCRIPTION_ID   = e372e067-8caa-40b9-9328-5da10e3bf9e8
+PLATFORM_RESOURCE_GROUP = rg-acaplat-platform-eus2
+TFSTATE_STORAGE_ACCOUNT = stacaplattf0fe06910
+TFSTATE_CONTAINER       = tfstate
+ACR_NAME                = cracaplatbbfc04a5
+

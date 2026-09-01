@@ -12,7 +12,7 @@
 # Idempotent: re-running discovers what already exists and only fills gaps.
 #
 # Usage:
-#   SUBSCRIPTION_ID=<id> GH_ORG=<org> GH_REPO=<repo> ./scripts/bootstrap-azure.sh
+#   SUBSCRIPTION_ID=<id> REPO_OWNER=<org> REPO_NAME=<repo> ./scripts/bootstrap-azure.sh
 #
 # Optional overrides:
 #   LOCATION                  default eastus2
@@ -30,8 +30,14 @@ command -v az >/dev/null || die "the Azure CLI (az) is required; see the README"
 command -v openssl >/dev/null || die "openssl is required to generate unique names"
 
 : "${SUBSCRIPTION_ID:?set SUBSCRIPTION_ID to the subscription to bootstrap}"
-: "${GH_ORG:?set GH_ORG to your GitHub organisation or username}"
-: "${GH_REPO:?set GH_REPO to the repository name, e.g. terraform-aca}"
+: "${REPO_OWNER:?set REPO_OWNER to your GitHub organisation or username}"
+: "${REPO_NAME:?set REPO_NAME to the repository name, e.g. terraform-aca}"
+
+# An unsubstituted placeholder here silently produces federated credentials whose
+# subject can never match a real GitHub token. Fail now, not at the first deploy.
+case "${SUBSCRIPTION_ID}${REPO_OWNER}${REPO_NAME}" in
+  *'<'*|*'>'*|*' '*) die "SUBSCRIPTION_ID, REPO_OWNER or REPO_NAME still contains a placeholder: org='${REPO_OWNER}' repo='${REPO_NAME}'" ;;
+esac
 
 LOCATION="${LOCATION:-eastus2}"
 UAMI_NAME="${UAMI_NAME:-id-acaplat-platform}"
@@ -214,7 +220,7 @@ for class in "${CLASSES[@]}"; do
 {
   "name": "gh-${ghenv}",
   "issuer": "https://token.actions.githubusercontent.com",
-  "subject": "repo:${GH_ORG}/${GH_REPO}:environment:${ghenv}",
+  "subject": "repo:${REPO_OWNER}/${REPO_NAME}:environment:${ghenv}",
   "description": "GitHub Actions ${ghenv}",
   "audiences": ["api://AzureADTokenExchange"]
 }

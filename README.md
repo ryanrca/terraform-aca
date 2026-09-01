@@ -223,9 +223,19 @@ Three app registrations, one per class. Each gets two federated credentials — 
 `<class>-plan` environment and the gated `<class>` environment — plus `Contributor` and
 write access to the state container.
 
+Derive these from the git remote rather than typing them — a placeholder left
+unsubstituted here produces federated credentials that look fine and never match
+a real token.
+
+Do **not** name these `GH_REPO` or `GH_ORG`: `GH_REPO` is reserved by the `gh`
+CLI as a target-repository override in `OWNER/REPO` form, and setting it breaks
+every `gh` command in Part 2.
+
 ```bash
-export GH_ORG="<your-github-org-or-username>"
-export GH_REPO="terraform-aca"
+remote="$(git remote get-url origin)"
+export REPO_OWNER="$(basename "$(dirname "$remote")" | sed 's/.*://')"
+export REPO_NAME="$(basename "$remote" .git)"
+echo "REPO_OWNER=$REPO_OWNER  REPO_NAME=$REPO_NAME"
 ```
 
 ```bash
@@ -250,7 +260,7 @@ create_identity() {
 {
   "name": "gh-${ghenv}",
   "issuer": "https://token.actions.githubusercontent.com",
-  "subject": "repo:${GH_ORG}/${GH_REPO}:environment:${ghenv}",
+  "subject": "repo:${REPO_OWNER}/${REPO_NAME}:environment:${ghenv}",
   "description": "GitHub Actions ${ghenv}",
   "audiences": ["api://AzureADTokenExchange"]
 }
@@ -305,7 +315,7 @@ client secret to record, because there is none.
 
 ```bash
 gh auth login
-gh repo set-default "$GH_ORG/$GH_REPO"
+gh repo set-default "$REPO_OWNER/$REPO_NAME"
 ```
 
 ### 2.1 Environments
@@ -314,10 +324,26 @@ Six: an ungated `<class>-plan` so a plan is always produced for review, and `<cl
 carries the gate for apply and destroy.
 
 ```bash
+: "${REPO_OWNER:?set REPO_OWNER first — see step 1.6}"
+: "${REPO_NAME:?set REPO_NAME first — see step 1.6}"
+case "$REPO_OWNER$REPO_NAME" in *'<'*|*'>'*) echo "REPO_OWNER/REPO_NAME still hold a placeholder" >&2; return 1 2>/dev/null || exit 1 ;; esac
+
 for e in dev-plan dev staging-plan staging prod-plan prod; do
-  gh api -X PUT "repos/$GH_ORG/$GH_REPO/environments/$e" >/dev/null
-  echo "created environment: $e"
+  if gh api -X PUT "repos/$REPO_OWNER/$REPO_NAME/environments/$e" --silent; then
+    echo "created environment: $e"
+  else
+    echo "FAILED to create environment: $e" >&2
+  fi
 done
+```
+
+A 404 here means one of three things: `REPO_OWNER`/`REPO_NAME` are unset in the current
+shell, the repository has not been pushed to GitHub yet, or the repository is
+**private on a Free plan** — GitHub Environments require a public repository, or
+GitHub Pro/Team/Enterprise for a private one. Check with:
+
+```bash
+gh api "repos/$REPO_OWNER/$REPO_NAME" --jq '{full_name, visibility, plan: (.owner.plan.name // "not visible")}'
 ```
 
 ### 2.2 Variables
@@ -339,32 +365,50 @@ done < /tmp/acaplat-identities.txt
 
 ### 2.3 Gates
 
-Only production is gated. Get a reviewer ID with `gh api users/<login> --jq .id`, or a team
-ID with `gh api orgs/$GH_ORG/teams/<team-slug> --jq .id` (then `"type": "Team"`).
+Only production is gated. The reviewer must be a real numeric ID, so derive it
+rather than typing one in. Note the **unquoted** heredoc delimiter on the first
+command — `<<JSON`, not `<<'JSON'`. A quoted delimiter stops the shell expanding
+the variable and GitHub answers `400 Problems parsing JSON`.
 
 ```bash
-gh api -X PUT "repos/$GH_ORG/$GH_REPO/environments/prod" --input - <<'JSON'
+# Yourself. For a team: gh api orgs/$REPO_OWNER/teams/<slug> --jq .id, then "type": "Team".
+REVIEWER_ID="$(gh api user --jq .id)"
+echo "reviewer id: $REVIEWER_ID"
+
+gh api -X PUT "repos/$REPO_OWNER/$REPO_NAME/environments/prod" --input - <<JSON
 {
   "wait_timer": 0,
-  "prevent_self_review": true,
-  "reviewers": [{"type": "User", "id": <REVIEWER_USER_ID>}],
+  "prevent_self_review": false,
+  "reviewers": [{"type": "User", "id": ${REVIEWER_ID}}],
   "deployment_branch_policy": {"protected_branches": true, "custom_branch_policies": false}
 }
 JSON
 
-gh api -X PUT "repos/$GH_ORG/$GH_REPO/environments/staging" --input - <<'JSON'
+gh api -X PUT "repos/$REPO_OWNER/$REPO_NAME/environments/staging" --input - <<'JSON'
 {
   "deployment_branch_policy": {"protected_branches": true, "custom_branch_policies": false}
 }
 JSON
 ```
 
+`prevent_self_review` is **false** on purpose. On a one-person PoC you are both
+the deployer and the only reviewer, and `true` would make every production run
+wait forever on an approval you are not permitted to give. Set it to `true` once
+a second reviewer exists.
+
 `dev` and all three `*-plan` environments are deliberately ungated.
+
+Verify the gate took effect:
+
+```bash
+gh api "repos/$REPO_OWNER/$REPO_NAME/environments/prod" \
+  --jq '{name, reviewers: [.protection_rules[] | select(.type=="required_reviewers") | .reviewers[].reviewer.login]}'
+```
 
 ### 2.4 Branch protection and CODEOWNERS
 
 ```bash
-gh api -X PUT "repos/$GH_ORG/$GH_REPO/branches/main/protection" --input - <<'JSON'
+gh api -X PUT "repos/$REPO_OWNER/$REPO_NAME/branches/main/protection" --input - <<'JSON'
 {
   "required_status_checks": {"strict": true, "contexts": ["terraform-plan"]},
   "enforce_admins": false,
