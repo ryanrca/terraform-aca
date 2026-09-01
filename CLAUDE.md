@@ -23,7 +23,7 @@ The single most important distinction in this repo:
 | Layer | Created by | Lifetime | Contents |
 |---|---|---|---|
 | **Shared platform** | `scripts/bootstrap-azure.sh`, once | Outlives every environment | State storage account, container registry, user-assigned managed identity (holding `AcrPull`), CI app registrations |
-| **Environment** | The core Terraform, per environment | Created and destroyed freely | Resource group, Log Analytics workspace, ACA environment, container app, management lock |
+| **Environment** | The core Terraform, per environment | Created and destroyed freely | Resource group, Log Analytics workspace, ACA environment, container app |
 
 The core reads shared resources with **data sources**. It never creates them, and it never
 creates a role assignment — which is why the CI identities need only `Contributor`.
@@ -33,8 +33,8 @@ creates a role assignment — which is why the CI identities need only `Contribu
 1. **Never put an environment name in `terraform/`.**
    No `var.env_name == "prod"`, no `terraform.workspace`, no
    `count = var.env_class == "dev" ? 0 : 1`. If production needs something a sandbox does
-   not, add a **variable with a dev-safe default** (`enable_resource_lock`,
-   `log_daily_quota_gb`, …) and set it in the production tfvars. Verify with
+   not, add a **variable with a dev-safe default** (`log_daily_quota_gb`,
+   `log_retention_days`, …) and set it in the production tfvars. Verify with
    `grep -rniE '"(dev|staging|prod)"' terraform/` — should return only validation
    allow-lists.
 
@@ -68,7 +68,7 @@ terraform/                 THE CORE — identical for every environment
   backend.tf               empty partial backend block
   variables.tf             the environment contract + validation
   locals.tf                naming and tag computation
-  main.tf                  5 Azure resources + time_offset + 2 data sources
+  main.tf                  4 Azure resources + time_offset + 2 data sources
   outputs.tf               app_url, app_fqdn, resource_group_name
 envs/                      THE ONLY PLACE ENVIRONMENTS DIFFER
   dev/       dev-*.tfvars  sandboxes (self-service)
@@ -116,14 +116,14 @@ relocating.
 
 - Terraform `>= 1.9`. `azurerm` `~> 4.0`, `time` `~> 0.12`. Pin with `~>` and commit
   `.terraform.lock.hcl`.
-- No submodules. Six resources with no repetition do not justify a module layer. Introduce
+- No submodules. Five resources with no repetition do not justify a module layer. Introduce
   one when there is a second caller — the first candidate is multiple container apps per
   environment.
 - No `for_each` over environments — ever.
 - Every variable has a `description` and a `type`. Every variable that can be wrong has a
   `validation` block. Required invariants:
   - `env_class == "dev"` ⇒ `ttl_hours > 0`
-  - `env_class == "prod"` ⇒ `enable_resource_lock == true` and `ttl_hours == 0`
+  - `env_class == "prod"` ⇒ `ttl_hours == 0`
   - `env_class != "dev"` ⇒ `app_min_replicas >= 1`
   - `env_name` matches `^[a-z0-9]([a-z0-9-]{1,20})[a-z0-9]$`
 - `locals.tf` computes names and tags once; resources reference `local.*`. Never
@@ -220,8 +220,11 @@ through Actions logs is slow.
 - **Forgetting `-reconfigure` plans against the previous environment's state.** This is the
   single most likely way to cause real damage locally. Use `tf.sh`.
 - **Fork PRs get no OIDC token.** PR plans only work for branches in this repo.
-- **Destroying an environment with a management lock works** (Terraform removes the lock
-  first) — but a *manual* portal deletion will not. That is the intent.
+- **Contributor cannot write management locks.** `Microsoft.Authorization/*/Write` is in
+  Contributor's `notActions`, so anything under `Microsoft.Authorization/` — locks, role
+  assignments, policy — fails with a 403 in CI. A resource lock was removed from the core
+  for exactly this reason. Before adding any `Microsoft.Authorization/*` resource, check
+  the deployment identity can actually create it.
 
 ## When asked to add something
 

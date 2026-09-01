@@ -80,24 +80,23 @@ The platform has two layers. This keeps environments cheap to create and safe to
 │  │   └─────────────────────────────────────────────────────┘ │ │
 │  └───────────────────────────────────────────────────────────┘ │
 │  Log Analytics Workspace  log-acaplat-<env>-<region>           │
-│  Management Lock          CanNotDelete   (staging/prod only)   │
 └────────────────────────────────────────────────────────────────┘
 ```
 
 Core Terraform: `azurerm_resource_group`, `azurerm_log_analytics_workspace`,
-`azurerm_container_app_environment`, `azurerm_container_app`, `azurerm_management_lock`,
-`time_offset` — plus data sources reading the shared registry and identity. Five Azure
-resources plus a `time_offset` helper; no submodules until there is a second caller.
+`azurerm_container_app_environment`, `azurerm_container_app`, `time_offset` — plus data
+sources reading the shared registry and identity. Four Azure resources plus a
+`time_offset` helper; no submodules until there is a second caller.
 
 ## 4. Environment model
 
 ### 4.1 Classes
 
-| Class | Examples | Approve apply | Approve destroy | TTL tag | Resource lock | Cost posture |
-|---|---|---|---|---|---|---|
-| `dev` | `dev-ryan`, `dev-alice` | none | none | 72 h | no | min replicas 0, log cap 1 GB/day |
-| `staging` | `staging` | none (auto on merge to `main`) | none | none | yes | min replicas 1 |
-| `prod` | `prod`, `prod-dr` | **required** | **required + typed confirmation** | none | yes | min replicas 2 |
+| Class | Examples | Approve apply | Approve destroy | TTL tag | Cost posture |
+|---|---|---|---|---|---|
+| `dev` | `dev-ryan`, `dev-alice` | none | none | 72 h | min replicas 0, log cap 1 GB/day |
+| `staging` | `staging` | none (auto on merge to `main`) | none | none | min replicas 1 |
+| `prod` | `prod`, `prod-dr` | **required** | **required + typed confirmation** | none | min replicas 2 |
 
 Class is derived from the directory (`envs/dev/`, `envs/staging/`, `envs/prod/`) and 
 asserted in the file as `env_class`; the pipeline fails if they disagree.
@@ -154,7 +153,7 @@ login, the environment gate, plan artifacts, concurrency, the run summary, and c
 3. **No shared resources in the core.** Anything that outlives an environment is
    handled at the platform layer, and read with a data source.
 4. **Validate at the boundary.** `variables.tf` carries `validation` blocks, including
-   cross-variable invariants (dev must have a TTL; prod must be locked), so a bad tfvars
+   cross-variable invariants (dev must have a TTL; prod must not), so a bad tfvars
    fails in seconds without touching Azure.
 5. **Defaults are safe-for-dev.** An omitted value never silently produces something
    expensive or production-grade.
@@ -178,7 +177,6 @@ which is what lets one core serve N environments and why `tf.sh` always passes
 | `owner` | string | — | Email or team alias |
 | `extra_tags` | map(string) | `{}` | Additional tags |
 | `ttl_hours` | number | `72` | `0` disables expiry; must be `> 0` for `dev` |
-| `enable_resource_lock` | bool | `false` | `CanNotDelete` lock; must be `true` for `prod` |
 | `log_retention_days` | number | `30` | Log Analytics retention |
 | `log_daily_quota_gb` | number | `1` | Log Analytics daily ingestion cap; `-1` unlimited |
 | `platform_resource_group_name` | string | `"rg-acaplat-platform-eus2"` | Where the shared registry and identity live |
@@ -207,18 +205,20 @@ ttl_hours = 72
 file with `env_name = "prod"` and `location = "eastus2"`:
 
 ```hcl
-env_name             = "prod-dr"
-env_class            = "prod"
-location             = "westus3" # <-- the only meaningful difference
-owner                = "platform-team@example.com"
-ttl_hours            = 0
-enable_resource_lock = true
-log_retention_days   = 90
-log_daily_quota_gb   = -1
-app_min_replicas     = 2
-app_max_replicas     = 10
-app_cpu              = 0.5
-app_memory           = "1Gi"
+env_name  = "prod-dr"
+env_class = "prod"
+location  = "westus3" # <-- the only meaningful difference
+owner     = "platform-team@example.com"
+
+ttl_hours = 0
+
+log_retention_days = 90
+log_daily_quota_gb = -1
+
+app_min_replicas = 2
+app_max_replicas = 10
+app_cpu          = 0.5
+app_memory       = "1Gi"
 ```
 
 ## 6. Identity and access
@@ -293,8 +293,7 @@ Apply consumes the saved plan, so the reviewed plan is the applied plan. The con
 group is per environment, so applies to different environments run in parallel while
 applies to the same one queue.
 
-Destroy follows the same shape with `terraform plan -destroy`. The management lock is
-Terraform-managed, so destroy removes it first; manual portal deletion stays blocked.
+Destroy follows the same shape with `terraform plan -destroy`.
 
 ## 8. Environment lifecycle
 
@@ -342,7 +341,6 @@ is a real DR solution.
 | Subject pinning | Credentials bound to `repo:<ORG>/<REPO>:environment:<name>` |
 | Fork safety | Fork PRs never receive OIDC tokens; repo is internal, forks disabled |
 | State protection | Blob versioning, 30-day soft delete, no public blob access |
-| Accidental deletion | `CanNotDelete` lock on staging/prod resource groups |
 | Supply chain | Actions pinned to commit SHAs; providers pinned; `.terraform.lock.hcl` committed |
 | Auditability | Every change is a merged commit plus a retained plan artifact and run record |
 | Static analysis | `terraform fmt`, `validate`, `tflint` in the PR check |

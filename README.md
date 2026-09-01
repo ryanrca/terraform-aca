@@ -38,7 +38,7 @@ Sandboxes need no approval. Production apply and destroy pause for a reviewer.
 | Layer | Created by | Lifetime | Contents |
 |---|---|---|---|
 | **Shared platform** | `scripts/bootstrap-azure.sh`, once | Outlives every environment | State storage, container registry, managed identity, CI app registrations |
-| **Environment** | The core Terraform, per environment | Created and destroyed freely | Resource group, Log Analytics workspace, ACA environment, container app, lock |
+| **Environment** | The core Terraform, per environment | Created and destroyed freely | Resource group, Log Analytics workspace, ACA environment, container app |
 
 The core *reads* shared resources with data sources and never creates them — which is why
 it creates no role assignments, and why CI needs nothing beyond `Contributor`.

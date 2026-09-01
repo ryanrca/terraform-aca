@@ -3,8 +3,7 @@ env_class = "prod"
 location  = "eastus2"
 owner     = "platform-team@example.com"
 
-ttl_hours            = 0
-enable_resource_lock = true
+ttl_hours = 0
 
 log_retention_days = 90
 log_daily_quota_gb = -1

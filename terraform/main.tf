@@ -112,24 +112,3 @@ resource "azurerm_container_app" "this" {
     }
   }
 }
-
-# ---------------------------------------------------------------------------
-# Deletion guard. depends_on forces Terraform to remove the lock before the
-# resources it protects, so a pipeline destroy succeeds while a portal delete
-# still fails.
-# ---------------------------------------------------------------------------
-
-resource "azurerm_management_lock" "this" {
-  count = var.enable_resource_lock ? 1 : 0
-
-  name       = local.management_lock_name
-  scope      = azurerm_resource_group.this.id
-  lock_level = "CanNotDelete"
-  notes      = "Managed by Terraform. Destroy through the pipeline, not the portal."
-
-  depends_on = [
-    azurerm_container_app.this,
-    azurerm_container_app_environment.this,
-    azurerm_log_analytics_workspace.this,
-  ]
-}

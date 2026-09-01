@@ -33,7 +33,6 @@ locals {
   log_analytics_name     = "log-${local.name_prefix}"
   container_app_env_name = "cae-${local.name_prefix}"
   container_app_name     = "ca-${var.app_name}-${var.env_name}"
-  management_lock_name   = "lock-${local.name_prefix}"
 
   # Empty when TTL is disabled, so the tag is always present and always queryable.
   expires_at = var.ttl_hours > 0 ? time_offset.expiry[0].rfc3339 : ""

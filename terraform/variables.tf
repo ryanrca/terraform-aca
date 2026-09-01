@@ -69,17 +69,6 @@ variable "ttl_hours" {
   }
 }
 
-variable "enable_resource_lock" {
-  type        = bool
-  description = "Place a CanNotDelete management lock on the resource group. Blocks out-of-band portal deletion; the pipeline still destroys cleanly."
-  default     = false
-
-  validation {
-    condition     = var.env_class != "prod" || var.enable_resource_lock
-    error_message = "A prod environment must set enable_resource_lock = true."
-  }
-}
-
 # ---------------------------------------------------------------------------
 # Observability
 # ---------------------------------------------------------------------------
