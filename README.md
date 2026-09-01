@@ -458,27 +458,88 @@ cat .github/CODEOWNERS
 
 ### 3.1 Verify OIDC first
 
-The cheapest test of the whole identity chain. Push as
-`.github/workflows/oidc-check.yml`, run it against `dev-plan`, then delete it.
+The cheapest test of the whole identity chain: no Terraform, no Azure resources,
+no state. It proves that the federated credential subject, the GitHub Environment
+name, and the repository variables all agree. Do this before anything else.
 
-```yaml
+**1. Create the file.**
+
+```bash
+cat > .github/workflows/oidc-check.yml <<'YAML'
 name: OIDC check
-on: { workflow_dispatch: }
-permissions: { id-token: write, contents: read }
+
+# push, not just workflow_dispatch: a workflow_dispatch workflow does not appear
+# in the Actions UI until it exists on the DEFAULT branch, so on a feature branch
+# there would be nothing to click.
+on: [push, workflow_dispatch]
+
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
     environment: dev-plan
     steps:
-      - uses: azure/login@v2
+      - uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3.0.2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - run: az account show -o table
+      - run: az account show --output table
+YAML
 ```
 
-`AADSTS70021` here means the federated subject and the environment name disagree.
+**2. Commit and push it.** The push is what triggers the run.
+
+```bash
+git add .github/workflows/oidc-check.yml
+git commit -m "chore: temporary OIDC pre-flight check"
+git push
+```
+
+**3. Watch the run.** It takes about 20 seconds to appear.
+
+```bash
+gh run list --workflow=oidc-check.yml
+gh run watch
+```
+
+**4. What success looks like.** The `az account show` step prints your
+subscription, which means Azure accepted a token minted by GitHub:
+
+```
+Name              CloudName    SubscriptionId                        State    IsDefault
+----------------  -----------  ------------------------------------  -------  -----------
+Your Subscription AzureCloud   00000000-0000-0000-0000-000000000000  Enabled  True
+```
+
+Confirm the job actually ran green:
+
+```bash
+gh run list --workflow=oidc-check.yml --json conclusion,headBranch --jq '.[0]'
+# expect: {"conclusion":"success","headBranch":"<your branch>"}
+```
+
+**5. If it fails**, read the error before changing anything:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| No run appears at all | The workflow file has a YAML error, or it was never pushed | `gh run list --workflow=oidc-check.yml`; check the Actions tab, which shows parse errors against the file |
+| `AADSTS70021: No matching federated identity record found` | The credential subject does not match `repo:OWNER/REPO:environment:dev-plan` | `az ad app federated-credential list --id <dev app id> --query "[].subject" -o tsv` and compare character for character |
+| `Az CLI Login failed` with an empty client id | `AZURE_CLIENT_ID` is missing on the `dev-plan` environment | `gh variable get AZURE_CLIENT_ID --env dev-plan`; re-run step 2.2 if empty |
+| `Error: Value cannot be null. (Parameter 'tenantId')` | Repository variables were never set | `gh variable list`; re-run step 2.2 |
+| Job waits on approval | A protection rule was applied to `dev-plan` | `dev-plan` must be ungated — see step 2.3 |
+
+**6. Delete it once green.** It has served its purpose and grants `id-token:
+write` on every push.
+
+```bash
+git rm .github/workflows/oidc-check.yml
+git commit -m "chore: remove temporary OIDC pre-flight check"
+git push
+```
 
 ### 3.2 Create a sandbox and deploy
 
