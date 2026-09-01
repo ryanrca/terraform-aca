@@ -196,6 +196,26 @@ info "AcrPull granted to ${UAMI_NAME}"
 # ---------------------------------------------------------------------------
 step "CI identities"
 # ---------------------------------------------------------------------------
+# GitHub may present either OIDC subject format:
+#
+#   classic    repo:OWNER/REPO:environment:NAME
+#   ID-based   repo:OWNER@<ownerId>/REPO@<repoId>:environment:NAME   (rename-proof)
+#
+# Which one arrives depends on the repository's OIDC subject settings, and the
+# failure mode is an opaque AADSTS700213 at deploy time. Register both.
+OWNER_ID=""; REPO_ID=""
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  OWNER_ID="$(gh api "users/${REPO_OWNER}" --jq .id 2>/dev/null || true)"
+  REPO_ID="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}" --jq .id 2>/dev/null || true)"
+fi
+if [ -n "${OWNER_ID}" ] && [ -n "${REPO_ID}" ]; then
+  info "GitHub IDs: owner=${OWNER_ID} repo=${REPO_ID} (registering both subject formats)"
+else
+  info "WARNING: could not resolve GitHub owner/repo IDs (gh not installed or not"
+  info "         authenticated). Only the classic subject will be registered. If a"
+  info "         deploy fails with AADSTS700213, re-run this script after 'gh auth login'."
+fi
+
 : > "${IDENTITIES_FILE}"
 
 for class in "${CLASSES[@]}"; do
@@ -229,6 +249,22 @@ JSON
       info "  federated credential gh-${ghenv}"
     else
       info "  federated credential gh-${ghenv} already exists"
+    fi
+
+    [ -n "${OWNER_ID}" ] && [ -n "${REPO_ID}" ] || continue
+    if az ad app federated-credential create --id "${app_id}" --parameters "$(cat <<JSON
+{
+  "name": "gh-${ghenv}-id",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:${REPO_OWNER}@${OWNER_ID}/${REPO_NAME}@${REPO_ID}:environment:${ghenv}",
+  "description": "GitHub Actions ${ghenv} (ID-based subject)",
+  "audiences": ["api://AzureADTokenExchange"]
+}
+JSON
+)" --output none 2>/dev/null; then
+      info "  federated credential gh-${ghenv}-id"
+    else
+      info "  federated credential gh-${ghenv}-id already exists"
     fi
   done
 

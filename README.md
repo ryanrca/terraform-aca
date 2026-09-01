@@ -284,7 +284,19 @@ for class in dev staging prod; do
 done
 ```
 
-Verify each identity has exactly two subjects:
+GitHub presents one of two OIDC subject formats, depending on the repository's
+settings:
+
+```
+classic    repo:OWNER/REPO:environment:NAME
+ID-based   repo:OWNER@<ownerId>/REPO@<repoId>:environment:NAME     (rename-proof)
+```
+
+The script registers **both**, because which one arrives is not something you
+control from Azure, and a mismatch surfaces only as an opaque `AADSTS700213` at
+the first deploy. Registering both costs nothing.
+
+Verify each identity has four subjects (two formats × two environments):
 
 ```bash
 while read -r class app_id; do
@@ -623,7 +635,7 @@ the correct backend key, and skipping that silently reuses the previous environm
 
 | Symptom | Fix |
 |---|---|
-| `AADSTS70021: No matching federated identity record found` | The job's `environment:` must exactly equal the credential subject's environment segment. Check with `az ad app federated-credential list --id <APP_ID> --query "[].subject" -o tsv` |
+| `AADSTS700213 / AADSTS70021: No matching federated identity record found` | Compare the `subject claim` printed in the failing job's log against `az ad app federated-credential list --id <APP_ID> --query "[].subject" -o tsv`. If the claim contains numeric IDs (`repo:owner@123/repo@456:...`), your repository issues ID-based subjects — re-run `scripts/bootstrap-azure.sh` with `gh` authenticated to register that form |
 | `Error: building AzureRM Client: … ARM_SUBSCRIPTION_ID` | azurerm 4.x needs an explicit subscription — export `ARM_SUBSCRIPTION_ID` |
 | `403` / `AuthorizationPermissionMismatch` at `terraform init` | Grant `Storage Blob Data Contributor` on the **container**, not just `Contributor` on the account. Allow ~60s propagation |
 | `KeyBasedAuthenticationNotPermitted` from `az storage` | Shared-key access is disabled by design — add `--auth-mode login` |
